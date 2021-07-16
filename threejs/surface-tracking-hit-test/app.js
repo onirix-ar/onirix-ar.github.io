@@ -1,4 +1,3 @@
-
 // ====== Imports ======
 
 import OnirixSDK from "https://sdk.onirix.com/0.3.0/ox-sdk.esm.js";
@@ -7,7 +6,8 @@ import { GLTFLoader } from 'https://cdn.skypack.dev/three@0.127.0/examples/jsm/l
 
 // ====== ThreeJS ======
 
-var renderer, scene, camera, floor, raycaster, clock, animationMixers;
+var renderer, scene, camera, floor, car, envMap;
+var isCarPlaced = false;
 
 function setupRenderer(rendererCanvas) {
     
@@ -18,6 +18,7 @@ function setupRenderer(rendererCanvas) {
     renderer = new THREE.WebGLRenderer({ canvas: rendererCanvas, alpha: true });
     renderer.setClearColor(0x000000, 0);
     renderer.setSize(width, height);
+    renderer.outputEncoding = THREE.sRGBEncoding;
     
     // Ask Onirix SDK for camera parameters to create a 3D camera that fits with the AR projection.
     const cameraParams = OX.getCameraParameters();
@@ -28,12 +29,19 @@ function setupRenderer(rendererCanvas) {
     scene = new THREE.Scene();
     
     // Add some lights
-    const ambientLight = new THREE.AmbientLight(0xcccccc, 0.4);
-    scene.add(ambientLight);
     const hemisphereLight = new THREE.HemisphereLight(0xbbbbff, 0x444422);
     scene.add(hemisphereLight);
+    const directionalLight = new THREE.DirectionalLight(0xFFFFFF, 1);
+    directionalLight.position.set(0, 10, 0);
+    scene.add(directionalLight);
 
-    // Add transparent floor for model placement using raycasting
+    // Load env map
+    const textureLoader = new THREE.TextureLoader();
+    envMap = textureLoader.load('envmap.jpg');
+	envMap.mapping = THREE.EquirectangularReflectionMapping;
+    envMap.encoding = THREE.sRGBEncoding;
+
+    // Add transparent floor to generate shadows
     floor = new THREE.Mesh(
         new THREE.PlaneGeometry(100, 100),
         new THREE.MeshBasicMaterial({
@@ -44,16 +52,8 @@ function setupRenderer(rendererCanvas) {
         })
     );
   
-    // Rotate floor to be horizontal and place it 1 meter below camera
+    // Rotate floor to be horizontal
     floor.rotateX(Math.PI / 2)
-    floor.position.set(0, -1, 0);
-    scene.add(floor);
-
-    // Create a raycaster
-    raycaster = new THREE.Raycaster();
-
-    animationMixers = [];
-    clock = new THREE.Clock(true);
 
 }
 
@@ -88,45 +88,31 @@ function render() {
     renderer.render(scene, camera);
 }
 
-function renderLoop() {
-
-    // Update model animations at a fixed framerate (delta time)
-    const delta = clock.getDelta();
-    animationMixers.forEach(mixer => {
-        mixer.update(delta);
-    });
-
-    render();
-    requestAnimationFrame(() => renderLoop());
-
+function onHitResult(hitResult) {
+    if (car && !isCarPlaced) {
+        document.getElementById("transform-controls").style.display = 'block';
+        car.position.copy(hitResult.position);
+    }
 }
 
-function onTouch(touchPos) {
+function placeCar() {
+    isCarPlaced = true;
+}
 
-    // Raycast
-    raycaster.setFromCamera(touchPos, camera);
-    const intersects = raycaster.intersectObject(floor);
+function scaleCar(value) {
+    car.scale.set(value, value, value);
+}
 
-    if (intersects.length > 0 && intersects[0].object == floor) {
-        
-        // Load a 3D model and add it to the scene over touched position
-        const gltfLoader = new GLTFLoader();
-        gltfLoader.load("bear.glb", (gltf) => {
-            const model = gltf.scene;
-            const animations = gltf.animations;
-            model.position.set(intersects[0].point.x, intersects[0].point.y, intersects[0].point.z);
-            // Model looking to the camera on Y axis
-            model.rotation.y = Math.atan2((camera.position.x - model.position.x), (camera.position.z - model.position.z));
-            scene.add(model);
-            // Play model animation
-            const mixer = new THREE.AnimationMixer(model);
-            const action = mixer.clipAction(animations[0]);
-            action.play();
-            animationMixers.push(mixer);
-        });
+function rotateCar(value) {
+    car.rotation.y = value;
+}
 
-    }
-
+function changeCarColor(value) {
+    car.traverse((child) => {
+        if (child.material && child.material.name === 'CarPaint') {
+            child.material.color.setHex(value);
+        }
+    });
 }
 
 
@@ -143,11 +129,58 @@ OX.init(config).then(rendererCanvas => {
     // Setup ThreeJS renderer
     setupRenderer(rendererCanvas);
 
-    // All loaded, so hide loading screen
-    document.getElementById("loading-screen").style.display = 'none';
+    // Load car model
+    const gltfLoader = new GLTFLoader();
+    gltfLoader.load("range_rover.glb", (gltf) => {
+        
+        car = gltf.scene;
+        car.traverse((child) => {
+            if (child.material) {
+                console.log("updating material");
+                child.material.envMap = envMap;
+                child.material.needsUpdate = true;
+            }
+        });
 
-    // Initialize render loop
-    renderLoop();
+        scene.add(car);
+        
+        // All loaded, so hide loading screen
+        document.getElementById("loading-screen").style.display = 'none';
+
+        document.getElementById("initializing").style.display = 'block';
+
+        document.getElementById("tap-to-place").addEventListener('click', () => {
+            placeCar();
+            document.getElementById("transform-controls").style.display = 'none';
+            document.getElementById("color-controls").style.display = 'block';
+        });
+
+        const scaleSlider = document.getElementById("scale-slider");
+        scaleSlider.addEventListener('input', () => {
+            scaleCar(scaleSlider.value / 100);
+        });
+        const rotationSlider = document.getElementById("rotation-slider");
+        rotationSlider.addEventListener('input', () => {
+            rotateCar(rotationSlider.value * Math.PI / 180);
+        });
+
+        document.getElementById("black").addEventListener('click', () => {
+            changeCarColor(0x111111);
+        });
+
+        document.getElementById("silver").addEventListener('click', () => {
+            changeCarColor(0xffffff);
+        });
+
+        document.getElementById("orange").addEventListener('click', () => {
+            changeCarColor(0xff2600);
+        });
+
+        document.getElementById("blue").addEventListener('click', () => {
+            changeCarColor(0x0011ff);
+        });
+
+    });
 
     OX.subscribe(OnirixSDK.Events.OnPose, function (pose) {
         updatePose(pose);
@@ -159,6 +192,11 @@ OX.init(config).then(rendererCanvas => {
 
     OX.subscribe(OnirixSDK.Events.OnTouch, function (touchPos) {
         onTouch(touchPos);
+    });
+
+    OX.subscribe(OnirixSDK.Events.OnHitTestResult, function (hitResult) {
+        document.getElementById("initializing").style.display = 'none';
+        onHitResult(hitResult);
     });
 
 }).catch((error) => {
